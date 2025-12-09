@@ -84,7 +84,7 @@ def get_aiperf_cmd(
         str(num_prefix_prompts),
         "--artifact-dir",
         artifact_dir,
-        "-v",
+        # "-v", # Remove this for showing metric table
         "-H",
         "Authorization: Bearer NOT USED",
         "-H",
