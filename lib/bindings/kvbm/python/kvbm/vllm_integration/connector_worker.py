@@ -76,17 +76,32 @@ class KvConnectorWorker:
                 kv_caches.items(), key=lambda item: extract_layer_index(item[0])
             )
         ]
+        
+        if torch.cuda.is_available():
+            events = [
+                torch.cuda.Event(enable_timing=False, interprocess=False)
+                for _ in range(len(ordered_kv_caches))
+            ]
 
-        events = [
-            torch.cuda.Event(enable_timing=False, interprocess=False)
-            for _ in range(len(ordered_kv_caches))
-        ]
+            # events are lazy, if we don't record them once here, the raw handles we pass to rust will be null
+            for event in events:
+                event.record(torch.cuda.current_stream())
 
-        # events are lazy, if we don't record them once here, the raw handles we pass to rust will be null
-        for event in events:
-            event.record(torch.cuda.current_stream())
+            raw_event_handles = [event.cuda_event for event in events]
+        elif torch.xpu.is_available():
+            events = [
+                torch.xpu.Event(enable_timing=False,)
+                for _ in range(len(ordered_kv_caches))
+            ]
 
-        raw_event_handles = [event.cuda_event for event in events]
+            # events are lazy, if we don't record them once here, the raw handles we pass to rust will be null
+            for event in events:
+                event.record(torch.xpu.current_stream())
+
+            raw_event_handles = [event.sycl_event for event in events]
+        else:
+            raise Exception("Device not supported!")
+
 
         self.events = {
             layer_name: event
@@ -116,6 +131,7 @@ class KvConnectorWorker:
             kv_cache_dtype = STR_DTYPE_TO_TORCH_DTYPE[cache_config.cache_dtype]
 
         # Register with connector using ordered data
+        print(device_id, num_device_blocks, page_size,)
         self._connector.register_kv_caches(
             num_device_blocks,
             page_size,

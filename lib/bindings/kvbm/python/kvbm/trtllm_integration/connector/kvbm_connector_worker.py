@@ -45,7 +45,7 @@ class DynamoKVBMConnectorWorker(KvCacheConnectorWorker):
         self.rank = mappings.rank
 
         self._connector = RustKvConnectorWorker(self.drt, str(self.rank))
-        self.event = torch.cuda.Event()
+        self.event = torch.xpu.Event() if torch.xpu.is_available() else torch.cuda.Event()
 
         # Default to old way of processing offload
         self.use_forward_pass_callable = False
@@ -75,15 +75,28 @@ class DynamoKVBMConnectorWorker(KvCacheConnectorWorker):
         kv_cache_dtype = kv_cache_tensor.dtype
 
         num_cache_layers = kv_cache_tensor.shape[1]
-        self.events = [
-            torch.cuda.Event(enable_timing=False, interprocess=False)
-            for _ in range(num_cache_layers)
-        ]
+        if torch.cuda.is_available():
+            self.events = [
+                torch.cuda.Event(enable_timing=False, interprocess=False)
+                for _ in range(num_cache_layers)
+            ]
 
-        for event in self.events:
-            event.record(torch.cuda.current_stream(device_id))
+            for event in self.events:
+                event.record(torch.cuda.current_stream(device_id))
 
-        raw_event_handles = [event.cuda_event for event in self.events]
+            raw_event_handles = [event.cuda_event for event in self.events]
+        elif torch.xpu.is_available():
+            self.events = [
+                torch.xpu.Event(enable_timing=False,)
+                for _ in range(num_cache_layers)
+            ]
+
+            for event in self.events:
+                event.record(torch.xpu.current_stream(device_id))
+
+            raw_event_handles = [event.sycl_event for event in self.events]
+        else:
+            raise Exception("Device not supported!")
 
         self._connector.register_kv_caches(
             num_device_blocks,

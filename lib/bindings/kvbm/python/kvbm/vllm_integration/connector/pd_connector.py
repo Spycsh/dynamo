@@ -14,8 +14,12 @@ from vllm.distributed.kv_transfer.kv_connector.v1.multi_connector import (
 )
 from vllm.distributed.kv_transfer.kv_connector.v1.nixl_connector import (
     NixlConnector,
-    NixlHandshakePayload,
 )
+try:
+    from vllm.distributed.kv_transfer.kv_connector.v1.nixl_connector import NixlHandshakePayload
+except ImportError:
+    NixlHandshakePayload = None
+
 from vllm.v1.core.sched.output import SchedulerOutput
 
 # Optional import for LMCache support

@@ -31,7 +31,7 @@ To use KVBM in vLLM, you can follow the steps below:
 docker compose -f deploy/docker-compose.yml up -d
 
 # Build a dynamo vLLM container (KVBM is built in by default)
-./container/build.sh --framework vllm
+./container/build.sh --framework vllm --enable-kvbm
 
 # Launch the container
 ./container/run.sh --framework vllm -it --mount-workspace --use-nixl-gds

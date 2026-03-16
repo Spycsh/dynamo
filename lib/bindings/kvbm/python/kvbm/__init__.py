@@ -7,7 +7,14 @@ import logging
 logger = logging.getLogger(__name__)
 
 # nixl needs to be loaded before any other imports to ensure that the nixl shared object is available for the KVBM core.
-import nixl
+try:
+    import nixl
+    import nixl._api as nixl_api
+    import nixl._bindings as nixl_bindings
+except ImportError as e:
+    raise ImportError(
+        "NIXL Python bindings must be installed to use this module. Please install NIXL, ex: 'pip install nixl'."
+    ) from e
 
 logger.info(f"Loaded nixl API module: {nixl._api}")
 

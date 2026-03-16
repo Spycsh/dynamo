@@ -249,7 +249,7 @@ For contributors who want to build Dynamo from source rather than installing fro
 **Ubuntu:**
 
 ```
-sudo apt install -y build-essential libhwloc-dev libudev-dev pkg-config libclang-dev protobuf-compiler python3-dev cmake
+sudo apt update && apt install -y build-essential libhwloc-dev libudev-dev pkg-config libclang-dev protobuf-compiler python3-dev cmake
 ```
 
 **macOS:**
