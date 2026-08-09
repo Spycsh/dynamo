@@ -14,7 +14,6 @@ import logging
 import os
 import sys
 import tempfile
-import time
 from pathlib import Path
 from typing import Any, Dict, Optional
 
@@ -210,14 +209,13 @@ COUNTER_TEST_PAYLOAD: Dict[str, Any] = {
 
 def _require_router_aic() -> dict[str, Any]:
     pytest.importorskip(
-        "aiconfigurator", reason="router AIC test requires aiconfigurator"
+        "aiconfigurator_core",
+        reason="router AIC test requires aiconfigurator-core",
     )
-    # Rust AIC callback imports aiconfigurator.sdk.engine.compile_engine
-    # (Phase 1.5 API from ai-dynamo/aiconfigurator#1200). PyPI releases
-    # predating it don't ship engine.py.
+    # Rust AIC callback imports aiconfigurator_core.sdk.engine.compile_engine.
     pytest.importorskip(
-        "aiconfigurator.sdk.engine",
-        reason="router AIC test requires aiconfigurator.sdk.engine (Phase 1.5)",
+        "aiconfigurator_core.sdk.engine",
+        reason="router AIC test requires aiconfigurator_core.sdk.engine",
     )
     return ROUTER_AIC_CONFIG.copy()
 
@@ -957,24 +955,43 @@ def test_router_decisions_router_aic(
     )
 
 
-def _wait_for_frontend_to_observe_single_pd_role(
-    frontend: KVRouterProcess,
+async def _wait_for_frontend_to_commit_single_pd_role(
+    frontend_port: int,
+    namespace: str,
     worker_type: str,
     timeout: float = 30,
 ) -> None:
-    patterns = {
-        "decode": "No prefill endpoint for namespace yet, storing sender for future activation",
-        "prefill": "Stored prefill endpoint for future decode WorkerSet registration",
-    }
-    pattern = patterns[worker_type]
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        if pattern in frontend.read_logs():
-            return
-        time.sleep(0.1)
+    readiness_url = f"http://localhost:{frontend_port}/v1/models/{MODEL_NAME}/ready"
+    deadline = asyncio.get_running_loop().time() + timeout
+    last_response: object = None
+    client_timeout = aiohttp.ClientTimeout(total=10)
+    async with aiohttp.ClientSession(timeout=client_timeout) as session:
+        while asyncio.get_running_loop().time() < deadline:
+            try:
+                async with session.get(readiness_url) as response:
+                    if response.status == 200:
+                        body = await response.json()
+                        last_response = body
+                        role = (
+                            body.get("namespaces", {})
+                            .get(namespace, {})
+                            .get("worker_types", {})
+                            .get(worker_type, {})
+                        )
+                        if role.get("workers", 0) == 1:
+                            return
+                    else:
+                        last_response = {
+                            "status": response.status,
+                            "body": await response.text(),
+                        }
+            except (aiohttp.ClientError, asyncio.TimeoutError) as error:
+                last_response = repr(error)
+            await asyncio.sleep(0.1)
 
     raise AssertionError(
-        f"Frontend did not observe the standalone {worker_type} WorkerSet within {timeout}s"
+        f"Frontend did not commit the standalone {worker_type} WorkerSet within {timeout}s; "
+        f"last response: {last_response}"
     )
 
 
@@ -1094,8 +1111,10 @@ def test_mocker_disagg_startup_lifecycle(
                 )[0]
 
             if frontend is not None and len(workers) == 1:
-                _wait_for_frontend_to_observe_single_pd_role(
-                    frontend, next(iter(workers))
+                asyncio.run(
+                    _wait_for_frontend_to_commit_single_pd_role(
+                        frontend_port, namespace, next(iter(workers))
+                    )
                 )
 
         assert frontend is not None
