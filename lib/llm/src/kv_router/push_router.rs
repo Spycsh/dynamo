@@ -1,7 +1,10 @@
 // SPDX-FileCopyrightText: Copyright (c) 2024-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-use std::{sync::Arc, time::Duration};
+use std::{
+    sync::{Arc, atomic::AtomicU64},
+    time::Duration,
+};
 
 use dynamo_kv_router::{
     protocols::{TokensWithHashes, WorkerWithDpRank},
@@ -116,6 +119,7 @@ where
     pub chooser: Arc<KvRouter<Sel>>,
     request_metrics: Arc<RouterRequestMetrics>,
     affinity: Option<AffinityCoordinator>,
+    decode_device_weighted_counter: AtomicU64,
 }
 
 impl<Sel> KvPushRouter<Sel>
@@ -150,6 +154,7 @@ where
             chooser,
             request_metrics,
             affinity,
+            decode_device_weighted_counter: AtomicU64::new(0),
         }
     }
 

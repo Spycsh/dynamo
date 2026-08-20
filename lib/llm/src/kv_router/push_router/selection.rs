@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2024-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-use std::collections::HashSet;
+use std::{collections::HashSet, sync::atomic::Ordering};
 
 use dynamo_kv_router::{
     RouterConfigOverride,
@@ -11,7 +11,7 @@ use dynamo_kv_router::{
     scheduling::RoutingEligibility,
     selector::WorkerSelector,
 };
-use dynamo_runtime::{dynamo_nvtx_range, pipeline::Error};
+use dynamo_runtime::{component::DeviceType, dynamo_nvtx_range, pipeline::Error};
 
 use crate::{
     kv_router::{
@@ -58,6 +58,23 @@ pub(super) struct SelectionOptions {
     pub(super) session_id: Option<String>,
 }
 
+const ENV_DECODE_NON_CPU_TO_CPU_RATIO: &str = "DYN_DECODE_NON_CPU_TO_CPU_RATIO";
+const ENV_ROUTER_NON_CPU_TO_CPU_RATIO: &str = "DYN_ROUTER_NON_CPU_TO_CPU_RATIO";
+const ENV_ENCODER_CUDA_TO_CPU_RATIO: &str = "DYN_ENCODER_CUDA_TO_CPU_RATIO";
+
+fn env_ratio(name: &str) -> Option<usize> {
+    std::env::var(name)
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .filter(|value| *value >= 1)
+}
+
+fn decode_non_cpu_to_cpu_ratio() -> Option<usize> {
+    env_ratio(ENV_DECODE_NON_CPU_TO_CPU_RATIO)
+        .or_else(|| env_ratio(ENV_ROUTER_NON_CPU_TO_CPU_RATIO))
+        .or_else(|| env_ratio(ENV_ENCODER_CUDA_TO_CPU_RATIO))
+}
+
 struct BestMatchArgs<'a> {
     context_id: &'a str,
     routing_parts: RoutingRequestParts<'a>,
@@ -80,6 +97,75 @@ impl<Sel> KvPushRouter<Sel>
 where
     Sel: WorkerSelector<ModelRuntimeConfig> + Send + 'static,
 {
+    fn narrow_decode_allowed_by_device_ratio(
+        &self,
+        phase: RequestPhase,
+        explicit_pin: Option<(u64, Option<u32>)>,
+        allowed_worker_ids: Option<HashSet<WorkerId>>,
+    ) -> Option<HashSet<WorkerId>> {
+        if phase != RequestPhase::Decode || explicit_pin.is_some() {
+            return allowed_worker_ids;
+        }
+
+        let Some(ratio) = decode_non_cpu_to_cpu_ratio() else {
+            return allowed_worker_ids;
+        };
+
+        let worker_ids: HashSet<WorkerId> = self
+            .chooser
+            .workers_with_configs
+            .borrow()
+            .keys()
+            .copied()
+            .collect();
+        let base: HashSet<WorkerId> = match allowed_worker_ids.as_ref() {
+            Some(allowed) => allowed.intersection(&worker_ids).copied().collect(),
+            None => worker_ids,
+        };
+        if base.is_empty() {
+            return allowed_worker_ids;
+        }
+
+        let mut cpu_ids = HashSet::new();
+        let mut non_cpu_ids = HashSet::new();
+        for instance in self.chooser.client().instances() {
+            if !base.contains(&instance.instance_id) {
+                continue;
+            }
+            if matches!(instance.device_type, Some(DeviceType::Cpu)) {
+                cpu_ids.insert(instance.instance_id);
+            } else {
+                non_cpu_ids.insert(instance.instance_id);
+            }
+        }
+
+        if cpu_ids.is_empty() || non_cpu_ids.is_empty() {
+            return allowed_worker_ids;
+        }
+
+        let cpu_slots = cpu_ids.len() as u64;
+        let non_cpu_slots = ratio as u64 * non_cpu_ids.len() as u64;
+        let cycle = cpu_slots + non_cpu_slots;
+        let cursor = self
+            .decode_device_weighted_counter
+            .fetch_add(1, Ordering::Relaxed)
+            % cycle;
+        let selected_cpu = cursor < cpu_slots;
+        let narrowed = if selected_cpu { cpu_ids } else { non_cpu_ids };
+
+        tracing::debug!(
+            ?phase,
+            ratio,
+            cursor,
+            cycle,
+            selected_device_group = if selected_cpu { "cpu" } else { "non_cpu" },
+            candidate_count = narrowed.len(),
+            "narrowed KV decode candidates by device ratio"
+        );
+
+        Some(narrowed)
+    }
+
     async fn select_best_match(&self, args: BestMatchArgs<'_>) -> Result<WorkerSelection, Error> {
         let outcome = self
             .chooser
@@ -182,6 +268,8 @@ where
                 return Err(anyhow::anyhow!(error));
             }
         }
+        allowed_worker_ids =
+            self.narrow_decode_allowed_by_device_ratio(phase, explicit_pin, allowed_worker_ids);
         let return_routing_hashes =
             !is_query_only && self.chooser.indexer().records_routing_decisions();
         let SelectionOptions {

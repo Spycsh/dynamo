@@ -40,9 +40,9 @@ VLLM_NIXL_SIDE_CHANNEL_PORT=20098 \
 ZE_AFFINITY_MASK=4 python3 -m dynamo.vllm \
     --model $MODEL \
     --block-size $BLOCK_SIZE \
-    --max-model-len 8192 \
     --enforce-eager \
-    --kv-transfer-config '{"kv_connector":"NixlConnector","kv_role":"kv_both","kv_buffer_device":"xpu","kv_connector_extra_config":{"enforce_handshake_compat": false}}' \
+    --max-model-len 8192 \
+    --kv-transfer-config '{"kv_connector":"NixlConnector","kv_role":"kv_both","kv_buffer_device":"cpu","kv_connector_extra_config":{"enforce_handshake_compat": false}}' \
     --disaggregation-mode prefill \
     --no-enable-prefix-caching \
     --kv-events-config '{"publisher":"zmq","topic":"kv-events","endpoint":"tcp://*:5558", "enable_kv_cache_events":true}' &
