@@ -1,0 +1,63 @@
+diff --git a/vllm/distributed/kv_transfer/kv_connector/v1/nixl/base_worker.py b/vllm/distributed/kv_transfer/kv_connector/v1/nixl/base_worker.py
+index 4cdc54f7e..2564e969f 100644
+--- a/vllm/distributed/kv_transfer/kv_connector/v1/nixl/base_worker.py
++++ b/vllm/distributed/kv_transfer/kv_connector/v1/nixl/base_worker.py
+@@ -1013,6 +1013,7 @@ class NixlBaseConnectorWorker:
+             physical_blocks_per_logical_kv_block=(
+                 self._physical_blocks_per_logical_kv_block
+             ),
++            nixl_memory_type=self.nixl_memory_type,
+         )
+         assert self.compat_hash is not None
+         encoder = msgspec.msgpack.Encoder()
+@@ -1265,6 +1266,7 @@ class NixlBaseConnectorWorker:
+             physical_blocks_per_logical_kv_block=(
+                 self._physical_blocks_per_logical_kv_block
+             ),
++            nixl_memory_type=self.nixl_memory_type,
+         )
+         # Wrap metadata in payload with hash for defensive decoding
+         assert self.compat_hash is not None
+@@ -1656,7 +1658,18 @@ class NixlBaseConnectorWorker:
+             blocks_data = np.concatenate([blocks_data, mamba])
+ 
+         # Register with NIXL.
+-        descs = self.nixl_wrapper.get_xfer_descs(blocks_data, self.nixl_memory_type)
++        remote_nixl_memory_type = (
++            nixl_agent_meta.nixl_memory_type or self.nixl_memory_type
++        )
++        logger.info(
++            "Preparing remote NIXL descriptors: local_memory_type=%s, "
++            "remote_memory_type=%s, local_buffer_device=%s, remote_device_id=%s",
++            self.nixl_memory_type,
++            remote_nixl_memory_type,
++            self.kv_buffer_device,
++            nixl_agent_meta.device_id,
++        )
++        descs = self.nixl_wrapper.get_xfer_descs(blocks_data, remote_nixl_memory_type)
+         self.dst_xfer_side_handles[engine_id][remote_tp_rank] = (
+             self.nixl_wrapper.prep_xfer_dlist(remote_agent_name, descs)
+         )
+diff --git a/vllm/distributed/kv_transfer/kv_connector/v1/nixl/metadata.py b/vllm/distributed/kv_transfer/kv_connector/v1/nixl/metadata.py
+index f6f3de0a1..489885e8c 100644
+--- a/vllm/distributed/kv_transfer/kv_connector/v1/nixl/metadata.py
++++ b/vllm/distributed/kv_transfer/kv_connector/v1/nixl/metadata.py
+@@ -41,8 +41,9 @@ PUSH_REG_NOTIF_PREFIX = b"PUSH_REG:"
+ #   4: Add KV block lease renewal through heartbeats
+ #   5: Add remote_blocks_expiry_time to kv_transfer_params + handshake
+ #      clock-sync timestamp
++#   6: Add NIXL memory type to agent metadata for heterogeneous buffer devices
+ #
+-NIXL_CONNECTOR_VERSION: int = 5
++NIXL_CONNECTOR_VERSION: int = 6
+ 
+ 
+ @dataclass
+@@ -58,6 +59,7 @@ class NixlAgentMetadata:
+     ssm_sizes: tuple[int, int]
+     attn_backend_name: str
+     physical_blocks_per_logical_kv_block: int
++    nixl_memory_type: str = ""
+ 
+ 
+ @dataclass
